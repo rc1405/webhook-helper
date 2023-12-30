@@ -11,7 +11,7 @@ Webhook-helper
 * creates the webhook 
 
 ### Installation
-1. `kubectl apply -f https://raw.githubusercontent.com/rc1405/webhook-helper/master/webhook-helper.yaml`
+1. `kubectl apply -f https://raw.githubusercontent.com/rc1405/webhook-helper/main/webhook-helper.yaml`
 1. `kubectl get pods -n webhook-helper -w`
 1.  Wait for bootstrap to finish deployment
 
@@ -87,5 +87,5 @@ stateDiagram-v2
 1. Run `kubectl apply -f webhook-helper.yaml`
 
 ### Deletion
-1. `kubectl delete -f https://raw.githubusercontent.com/rc1405/webhook-helper/master/webhook-helper.yaml`
+1. `kubectl delete -f https://raw.githubusercontent.com/rc1405/webhook-helper/main/webhook-helper.yaml`
 1. `kubectl delete validatingwebhookconfigurations webhook-helper-admission`
