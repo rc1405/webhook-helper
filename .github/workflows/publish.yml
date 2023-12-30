@@ -15,11 +15,24 @@ on:
 
 jobs:
   push_to_registry:
+    strategy:
+      matrix:
+        msrv: ["1.75.0"] # 2021 edition requires 1.56
     name: Push Docker image to Docker Hub
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
+        with:
+          submodules: true
+      
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.msrv }}
+
+      - name: cargo +${{ matrix.msrv }} build release
+        run: cargo build --release
       
       - name: Log in to Docker Hub
         uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a
