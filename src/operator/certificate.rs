@@ -1,19 +1,22 @@
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use kube::core::ResourceExt;
-use kube::{Api, core::ObjectMeta};
-use k8s_openapi::ByteString;
-use std::collections::BTreeMap;
-use kube::Client;
+use k8s_openapi::api::certificates::v1::{
+    CertificateSigningRequest, CertificateSigningRequestCondition, CertificateSigningRequestSpec,
+    CertificateSigningRequestStatus,
+};
 use k8s_openapi::api::core::v1::Secret;
-use k8s_openapi::api::certificates::v1::{CertificateSigningRequest, CertificateSigningRequestStatus, CertificateSigningRequestCondition, CertificateSigningRequestSpec};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+use k8s_openapi::ByteString;
+use kube::core::ResourceExt;
+use kube::Client;
+use kube::{core::ObjectMeta, Api};
 use rcgen::{date_time_ymd, Certificate, CertificateParams, DistinguishedName, DnType, SanType};
+use std::collections::BTreeMap;
 use tracing::info;
 
 use crate::controller::Error;
 use crate::crd::{Stage, WebhookHelper};
 
-use super::{Operation, update_status, perform_get};
-use super::{perform_operation, perform_cluster_operation};
+use super::{perform_cluster_operation, perform_operation};
+use super::{perform_get, update_status, Operation};
 
 pub struct CertificateStage {
     client: Client,
@@ -23,20 +26,20 @@ pub struct CertificateStage {
     csr_request: Option<CertificateSigningRequest>,
     signed_cert: Option<ByteString>,
     cert_creation_time: Option<Time>,
-    secret: Option<Secret>
+    secret: Option<Secret>,
 }
 
 impl CertificateStage {
     pub fn new(client: Client, operation: Operation, webhook: WebhookHelper) -> CertificateStage {
-        CertificateStage { 
-            client, 
+        CertificateStage {
+            client,
             operation,
             webhook,
             cert: None,
             csr_request: None,
             signed_cert: None,
             cert_creation_time: None,
-            secret: None
+            secret: None,
         }
     }
 
@@ -48,32 +51,42 @@ impl CertificateStage {
                 self.approve_csr().await?;
                 self.create_secret().await?;
                 self.delete_csr().await?;
-            },
+            }
             Operation::Delete => {
                 if let Some(status) = self.webhook.status.clone() {
                     if let Some(secret) = status.certificate {
-                        let secret: Secret = perform_get(self.client.clone(), &secret, &self.webhook.spec.namespace).await?;
+                        let secret: Secret =
+                            perform_get(self.client.clone(), &secret, &self.webhook.spec.namespace)
+                                .await?;
                         self.secret = Some(secret);
                     };
                 };
                 self.delete().await?;
-                return Ok(())
-            },
-            _ => {},
+                return Ok(());
+            }
+            _ => {}
         };
 
-        if let Operation::Bootstrap = self.operation { } else {
+        if let Operation::Bootstrap = self.operation {
+        } else {
             let csr_name = match self.csr_request.clone() {
                 Some(csr) => csr.name_any(),
                 None => "<unknown>".into(),
             };
-            update_status(self.client.clone(), Stage::CertificateCreated(csr_name), self.webhook.clone()).await?;
+            update_status(
+                self.client.clone(),
+                Stage::CertificateCreated(csr_name),
+                self.webhook.clone(),
+            )
+            .await?;
 
-            if let Operation::Bootstrap = self.operation { } else if let Some(uid) = self.webhook.uid() {
+            if let Operation::Bootstrap = self.operation {
+            } else if let Some(uid) = self.webhook.uid() {
                 if let Some(secret) = self.secret.clone() {
-                    perform_operation(self.client.clone(), Operation::ApplyOwner(uid), &secret).await?;
-                };                    
-            };  
+                    perform_operation(self.client.clone(), Operation::ApplyOwner(uid), &secret)
+                        .await?;
+                };
+            };
         }
         Ok(())
     }
@@ -86,12 +99,11 @@ impl CertificateStage {
         params
             .distinguished_name
             .push(DnType::OrganizationName, "system:nodes");
-        params
-            .distinguished_name
-            .push(DnType::CommonName, format!("system:node:{}", self.webhook.name_any().to_lowercase()));
-        params.subject_alt_names = vec![
-            SanType::DnsName(self.webhook.name_any().to_lowercase()),
-        ];
+        params.distinguished_name.push(
+            DnType::CommonName,
+            format!("system:node:{}", self.webhook.name_any().to_lowercase()),
+        );
+        params.subject_alt_names = vec![SanType::DnsName(self.webhook.name_any().to_lowercase())];
 
         self.cert = Some(Certificate::from_params(params)?);
         Ok(())
@@ -99,23 +111,31 @@ impl CertificateStage {
 
     async fn create_csr(&mut self) -> Result<(), Error> {
         let raw_csr = self.cert.as_ref().unwrap().serialize_request_pem()?;
-        let request = CertificateSigningRequest{
-            metadata: ObjectMeta { 
+        let request = CertificateSigningRequest {
+            metadata: ObjectMeta {
                 name: Some(self.webhook.name_any().to_lowercase()),
                 ..Default::default()
             },
-            spec: CertificateSigningRequestSpec{
+            spec: CertificateSigningRequestSpec {
                 expiration_seconds: Some(86400),
                 signer_name: "kubernetes.io/kubelet-serving".into(),
                 request: ByteString(raw_csr.into_bytes().to_vec()),
-                usages: Some(vec!["key encipherment".into(), "digital signature".into(), "server auth".into()]),
+                usages: Some(vec![
+                    "key encipherment".into(),
+                    "digital signature".into(),
+                    "server auth".into(),
+                ]),
                 ..Default::default()
             },
             ..Default::default()
         };
-        let _response = perform_cluster_operation(self.client.clone(), Operation::Create, &request).await?;
+        let _response =
+            perform_cluster_operation(self.client.clone(), Operation::Create, &request).await?;
         self.csr_request = Some(request);
-        info!("Certificate {} created", self.webhook.name_any().to_lowercase());
+        info!(
+            "Certificate {} created",
+            self.webhook.name_any().to_lowercase()
+        );
         Ok(())
     }
 
@@ -123,26 +143,32 @@ impl CertificateStage {
         let csr_api: Api<CertificateSigningRequest> = Api::all(self.client.clone());
         let mut request = self.csr_request.clone().unwrap();
 
-        request.status = Some(CertificateSigningRequestStatus{
+        request.status = Some(CertificateSigningRequestStatus {
             certificate: None,
-            conditions: Some(vec![CertificateSigningRequestCondition{
+            conditions: Some(vec![CertificateSigningRequestCondition {
                 type_: String::from("Approved"),
                 message: Some(String::from("Approved by webhook-helper")),
                 reason: Some(String::from("WebHelperApproved")),
                 status: String::from("True"),
                 last_transition_time: None,
                 last_update_time: self.cert_creation_time.clone(),
-            }])
+            }]),
         });
 
         let body: Vec<u8> = serde_json::to_vec(&request)?;
-        let url = format!("/apis/certificates.k8s.io/v1/certificatesigningrequests/{}/approval", self.webhook.name_any().to_lowercase());
+        let url = format!(
+            "/apis/certificates.k8s.io/v1/certificatesigningrequests/{}/approval",
+            self.webhook.name_any().to_lowercase()
+        );
         let req = http::request::Request::put(url).body(body)?;
 
         // Deserialize JSON response as a JSON value. Alternatively, a type that
         // implements `Deserialize` can be used.
-        let resp = self.client.request::<CertificateSigningRequest>(req).await?;
-        
+        let resp = self
+            .client
+            .request::<CertificateSigningRequest>(req)
+            .await?;
+
         // waiter for status ok
         let mut cert_with_approval = csr_api.get_approval(resp.name_any().as_str()).await?;
         loop {
@@ -155,24 +181,32 @@ impl CertificateStage {
 
             std::thread::sleep(std::time::Duration::from_secs(5));
             cert_with_approval = csr_api.get_approval(resp.name_any().as_str()).await?;
-        };
-        
-        info!("Certificate {} approved", self.webhook.name_any().to_lowercase());
-        Ok(())
+        }
 
+        info!(
+            "Certificate {} approved",
+            self.webhook.name_any().to_lowercase()
+        );
+        Ok(())
     }
 
     async fn create_secret(&mut self) -> Result<(), Error> {
-        let key = self.cert.as_ref().unwrap().serialize_private_key_pem().as_bytes().to_vec();
+        let key = self
+            .cert
+            .as_ref()
+            .unwrap()
+            .serialize_private_key_pem()
+            .as_bytes()
+            .to_vec();
         let cert = ByteString(self.signed_cert.as_ref().unwrap().0.clone());
 
         let mut data: BTreeMap<String, ByteString> = BTreeMap::new();
         data.insert("tls.key".into(), ByteString(key));
         data.insert("tls.crt".into(), cert);
 
-        let secret = Secret{
+        let secret = Secret {
             type_: Some(format!("{}/tls", self.webhook.name_any().to_lowercase())),
-            metadata: ObjectMeta { 
+            metadata: ObjectMeta {
                 name: Some(self.webhook.name_any().to_lowercase().to_string()),
                 namespace: Some(self.webhook.spec.namespace.clone()),
                 ..Default::default()
@@ -202,7 +236,9 @@ impl CertificateStage {
 
     async fn delete_csr(&mut self) -> Result<(), Error> {
         if let Some(csr_request) = self.csr_request.clone() {
-            let _response = perform_cluster_operation(self.client.clone(), Operation::Delete, &csr_request).await?;
+            let _response =
+                perform_cluster_operation(self.client.clone(), Operation::Delete, &csr_request)
+                    .await?;
         };
         info!("CSR {} deleted", self.webhook.name_any().to_lowercase());
         Ok(())

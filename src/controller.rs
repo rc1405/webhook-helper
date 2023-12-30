@@ -1,18 +1,20 @@
+use kube::api::{Patch, PatchParams};
 use kube::core::ResourceExt;
-use kube::{Api, Client};
 use kube::runtime::controller::Action;
+use kube::{Api, Client};
+use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
-use kube::api::{Patch, PatchParams};
-use tracing::{info, warn, error};
-use serde_json::{json, Value};
 use thiserror::Error;
+use tracing::{error, info, warn};
 
-use kube::runtime::{controller::Controller, watcher, Config};
 use futures::StreamExt;
+use kube::runtime::{controller::Controller, watcher, Config};
 
-use crate::crd::{WebhookHelper, Stage};
-use crate::operator::{CertificateStage, DeploymentStage, ServiceStage, WebhookStage, Operation, determine_stage};
+use crate::crd::{Stage, WebhookHelper};
+use crate::operator::{
+    determine_stage, CertificateStage, DeploymentStage, Operation, ServiceStage, WebhookStage,
+};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -32,7 +34,7 @@ pub enum Error {
     #[error("ResourceNotReady")]
     ResourceNotReady,
     #[error("UnableToDetermineContainerName")]
-    UnableToDetermineContainerName
+    UnableToDetermineContainerName,
 }
 
 struct CustomClients {
@@ -57,33 +59,37 @@ enum CustomAction {
 /// - `echo`: A reference to `Echo` being reconciled to decide next action upon.
 fn determine_action<T: kube::core::Resource>(echo: &T) -> CustomAction {
     return if echo.meta().deletion_timestamp.is_some() {
-        echo.meta().finalizers.as_ref().map_or(CustomAction::NoOp, |finalizers| {
-            if !finalizers.is_empty() {
-                for finalizer in finalizers {
-                    if finalizer.starts_with("webhook-helper.io") {
-                        return CustomAction::Delete
-                    };
+        echo.meta()
+            .finalizers
+            .as_ref()
+            .map_or(CustomAction::NoOp, |finalizers| {
+                if !finalizers.is_empty() {
+                    for finalizer in finalizers {
+                        if finalizer.starts_with("webhook-helper.io") {
+                            return CustomAction::Delete;
+                        };
+                    }
+                    return CustomAction::NoOp;
                 };
-                return CustomAction::NoOp
-            };
-            CustomAction::NoOp
-        })
-        
+                CustomAction::NoOp
+            })
     } else {
-        echo.meta().finalizers.as_ref().map_or(CustomAction::Create, |finalizers| {
-            if !finalizers.is_empty() {
-                for finalizer in finalizers {
-                    if finalizer.starts_with("webhook-helper.io") {
-                        return CustomAction::Update
-                    };
+        echo.meta()
+            .finalizers
+            .as_ref()
+            .map_or(CustomAction::Create, |finalizers| {
+                if !finalizers.is_empty() {
+                    for finalizer in finalizers {
+                        if finalizer.starts_with("webhook-helper.io") {
+                            return CustomAction::Update;
+                        };
+                    }
+                    return CustomAction::Create;
                 };
-                return CustomAction::Create
-            };
-            CustomAction::Create
-        })
+                CustomAction::Create
+            })
     };
 }
-
 
 /// The reconciler that will be called when either object change
 async fn reconcile(g: Arc<WebhookHelper>, ctx: Arc<CustomClients>) -> Result<Action, Error> {
@@ -91,7 +97,7 @@ async fn reconcile(g: Arc<WebhookHelper>, ctx: Arc<CustomClients>) -> Result<Act
     // see configmapgen_controller example for full info
     let webhook_api: Api<WebhookHelper> = Api::all(ctx.kube.clone());
     let name = g.name_any();
-    
+
     let d = match webhook_api.get(name.as_str()).await {
         Ok(def) => Some(def),
         Err(e) => {
@@ -101,24 +107,20 @@ async fn reconcile(g: Arc<WebhookHelper>, ctx: Arc<CustomClients>) -> Result<Act
                     if error_response.code == 404 {
                         None
                     } else {
-                        return Ok(Action::requeue(Duration::from_secs(15)))
+                        return Ok(Action::requeue(Duration::from_secs(15)));
                     }
-                },
-                _ => return Ok(Action::requeue(Duration::from_secs(30)))
+                }
+                _ => return Ok(Action::requeue(Duration::from_secs(30))),
             }
         }
     };
 
     if let Some(z) = d {
-
         match determine_action(&z) {
             CustomAction::Create => {
                 info!("Creating webhook {}", z.name_any());
-                let mut cert_stage = CertificateStage::new(
-                    ctx.kube.clone(), 
-                    Operation::Create, 
-                    z.clone(),
-                );
+                let mut cert_stage =
+                    CertificateStage::new(ctx.kube.clone(), Operation::Create, z.clone());
                 match cert_stage.run().await {
                     Ok(_) => {
                         let finalizer: Value = json!({
@@ -127,21 +129,23 @@ async fn reconcile(g: Arc<WebhookHelper>, ctx: Arc<CustomClients>) -> Result<Act
                             }
                         });
                         let patch: Patch<&Value> = Patch::Merge(&finalizer);
-                        webhook_api.patch(&name, &PatchParams::default(), &patch).await?;
-                        return Ok(Action::requeue(Duration::from_secs(5)))
-                    },
+                        webhook_api
+                            .patch(&name, &PatchParams::default(), &patch)
+                            .await?;
+                        return Ok(Action::requeue(Duration::from_secs(5)));
+                    }
                     Err(e) => return Err(e),
-                };    
-            },
+                };
+            }
             CustomAction::Delete => {
                 info!("Deleting webhook {}", z.name_any());
-    
+
                 if let Some(status) = z.status.clone() {
                     if status.pod.is_some() || status.deployment.is_some() {
                         info!("Deleting deployment for {}", z.name_any());
                         let mut deploy_stage = DeploymentStage::new(
                             ctx.kube.clone(),
-                            Operation::Delete, 
+                            Operation::Delete,
                             z.clone(),
                             None,
                         );
@@ -150,32 +154,21 @@ async fn reconcile(g: Arc<WebhookHelper>, ctx: Arc<CustomClients>) -> Result<Act
 
                     if status.validating_webhook.is_some() || status.mutating_webhook.is_some() {
                         info!("Deleting webhook {}", z.name_any());
-                        let mut webhook_stage = WebhookStage::new(
-                            ctx.kube.clone(),
-                            Operation::Delete, 
-                            z.clone(),
-                            None
-                        );
+                        let mut webhook_stage =
+                            WebhookStage::new(ctx.kube.clone(), Operation::Delete, z.clone(), None);
                         webhook_stage.run().await?;
                     };
 
                     if status.service.is_some() {
                         info!("Deleting service {}", z.name_any());
-                        let mut service_stage = ServiceStage::new(
-                            ctx.kube.clone(), 
-                            Operation::Delete,
-                            z.clone(),
-                            None,
-                        );
+                        let mut service_stage =
+                            ServiceStage::new(ctx.kube.clone(), Operation::Delete, z.clone(), None);
                         service_stage.run().await?;
                     };
 
                     if status.certificate.is_some() {
-                        let mut cert_stage = CertificateStage::new(
-                            ctx.kube.clone(), 
-                            Operation::Delete, 
-                            z.clone(),
-                        );
+                        let mut cert_stage =
+                            CertificateStage::new(ctx.kube.clone(), Operation::Delete, z.clone());
                         cert_stage.run().await?;
                     }
                 };
@@ -186,79 +179,65 @@ async fn reconcile(g: Arc<WebhookHelper>, ctx: Arc<CustomClients>) -> Result<Act
                     }
                 });
                 let patch: Patch<&Value> = Patch::Merge(&finalizer);
-                
-                webhook_api.patch(&name, &PatchParams::default(), &patch).await?;
 
-                
-                return Ok(Action::await_change())
-            },
-            CustomAction::Update => {
-                match determine_stage(ctx.kube.clone(), z.clone()).await? {
-                    Stage::HelperCreated => {
-                        info!("Helper status found");
-                    },
-                    Stage::CertificateCreated(s) => {
-                        info!("Creating deployment for {}", z.name_any());
-                        let mut deploy_stage = DeploymentStage::new(
-                            ctx.kube.clone(),
-                            Operation::Create, 
-                            z.clone(),
-                            Some(s)
-                        );
-                        deploy_stage.run().await?;
-                        return Ok(Action::requeue(Duration::from_secs(10)))
-                    },
-                    Stage::CreationFailed(_) => {
-                        info!("Creation failed for {}", z.name_any());
-                        return Ok(Action::await_change())
-                    },
-                    Stage::DeploymentComplete(d) => {
-                        info!("Deployment is complete for {}", z.name_any());
-                        let mut service_stage = ServiceStage::new(
-                            ctx.kube.clone(), 
-                            Operation::Create,
-                            z.clone(),
-                            Some(d)
-                        );
-                        service_stage.run().await?;
-                        return Ok(Action::requeue(Duration::from_secs(10)))
+                webhook_api
+                    .patch(&name, &PatchParams::default(), &patch)
+                    .await?;
 
-                    },
-                    Stage::DeploymentStarted(_d) => {
-                        info!("Checking deployment status for {}", z.name_any());
-                        let mut deploy_stage = DeploymentStage::new(
-                            ctx.kube.clone(),
-                            Operation::Create, 
-                            z.clone(),
-                            None
-                        );
-                        match deploy_stage.run().await {
-                            Ok(_) => return Ok(Action::requeue(Duration::from_secs(10))),
-                            Err(e) => {
-                                match e {
-                                    Error::ResourceNotReady => return Ok(Action::requeue(Duration::from_secs(10))),
-                                    _ => return Err(e),
-                                }
-                            }
-                        };
-                    },
-                    Stage::ServiceCreated(s) => {
-                        info!("Creating webhook {}", z.name_any());
-                        let mut webhook_stage = WebhookStage::new(
-                            ctx.kube.clone(),
-                            Operation::Create, 
-                            z.clone(),
-                            Some(s)
-                        );
-                        webhook_stage.run().await?;
-                        return Ok(Action::requeue(Duration::from_secs(10)))
-                    },
-                    Stage::WebhookCreated(_) => {
-                        info!("Webhook created {}", z.name_any());
-                        return Ok(Action::await_change())
-                    },
-                    Stage::Deleting => {},
+                return Ok(Action::await_change());
+            }
+            CustomAction::Update => match determine_stage(ctx.kube.clone(), z.clone()).await? {
+                Stage::HelperCreated => {
+                    info!("Helper status found");
                 }
+                Stage::CertificateCreated(s) => {
+                    info!("Creating deployment for {}", z.name_any());
+                    let mut deploy_stage = DeploymentStage::new(
+                        ctx.kube.clone(),
+                        Operation::Create,
+                        z.clone(),
+                        Some(s),
+                    );
+                    deploy_stage.run().await?;
+                    return Ok(Action::requeue(Duration::from_secs(10)));
+                }
+                Stage::CreationFailed(_) => {
+                    info!("Creation failed for {}", z.name_any());
+                    return Ok(Action::await_change());
+                }
+                Stage::DeploymentComplete(d) => {
+                    info!("Deployment is complete for {}", z.name_any());
+                    let mut service_stage =
+                        ServiceStage::new(ctx.kube.clone(), Operation::Create, z.clone(), Some(d));
+                    service_stage.run().await?;
+                    return Ok(Action::requeue(Duration::from_secs(10)));
+                }
+                Stage::DeploymentStarted(_d) => {
+                    info!("Checking deployment status for {}", z.name_any());
+                    let mut deploy_stage =
+                        DeploymentStage::new(ctx.kube.clone(), Operation::Create, z.clone(), None);
+                    match deploy_stage.run().await {
+                        Ok(_) => return Ok(Action::requeue(Duration::from_secs(10))),
+                        Err(e) => match e {
+                            Error::ResourceNotReady => {
+                                return Ok(Action::requeue(Duration::from_secs(10)))
+                            }
+                            _ => return Err(e),
+                        },
+                    };
+                }
+                Stage::ServiceCreated(s) => {
+                    info!("Creating webhook {}", z.name_any());
+                    let mut webhook_stage =
+                        WebhookStage::new(ctx.kube.clone(), Operation::Create, z.clone(), Some(s));
+                    webhook_stage.run().await?;
+                    return Ok(Action::requeue(Duration::from_secs(10)));
+                }
+                Stage::WebhookCreated(_) => {
+                    info!("Webhook created {}", z.name_any());
+                    return Ok(Action::await_change());
+                }
+                Stage::Deleting => {}
             },
             CustomAction::NoOp => return Ok(Action::await_change()),
         }
@@ -267,7 +246,6 @@ async fn reconcile(g: Arc<WebhookHelper>, ctx: Arc<CustomClients>) -> Result<Act
     };
 
     Ok(Action::requeue(Duration::from_secs(5)))
-    
 }
 /// an error handler that will be called when the reconciler fails with access to both the
 /// object that caused the failure and the actual error
@@ -281,14 +259,14 @@ pub async fn run() -> Result<(), Error> {
     let client = Client::try_default().await?;
     let api: Api<WebhookHelper> = Api::all(client.clone());
 
-    let clients = CustomClients{
+    let clients = CustomClients {
         kube: client.clone(),
     };
 
     let context = Arc::new(clients); // bad empty context - put client in here
-        
+
     let config = Config::default().concurrency(2);
-    
+
     Controller::new(api.clone(), watcher::Config::default())
         .owns(api, watcher::Config::default())
         .with_config(config.clone())
@@ -299,26 +277,25 @@ pub async fn run() -> Result<(), Error> {
                 Ok((o, a)) => {
                     let message = format!("reconcile {} complete for {:?}", o.name, a);
                     info!(message);
-                },
-                Err(e) => {
-                    match e {
-                        kube::runtime::controller::Error::QueueError(queue_error) => {
-                            match queue_error {
-                                watcher::Error::WatchError(watch_error) => {
-                                    if watch_error.code != 410 && watch_error.reason != *"Expired" {
-                                        warn!("reconcile failed: {:?}", watch_error)
-                                    };
-                                },
-                                _ => warn!("reconcile failed: {:?}", queue_error),
+                }
+                Err(e) => match e {
+                    kube::runtime::controller::Error::QueueError(queue_error) => {
+                        match queue_error {
+                            watcher::Error::WatchError(watch_error) => {
+                                if watch_error.code != 410 && watch_error.reason != *"Expired" {
+                                    warn!("reconcile failed: {:?}", watch_error)
+                                };
                             }
-                        },
-                        _ => warn!("reconcile failed: {:?}", e),
+                            _ => warn!("reconcile failed: {:?}", queue_error),
+                        }
                     }
+                    _ => warn!("reconcile failed: {:?}", e),
                 },
             }
-        }).await;
-   
+        })
+        .await;
+
     println!("Controller terminated");
-    
+
     Ok(())
 }

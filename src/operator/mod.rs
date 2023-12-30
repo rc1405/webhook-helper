@@ -1,21 +1,16 @@
+mod backend;
 pub mod bootstrap;
 mod certificate;
-mod backend;
-mod webhook;
 mod service;
 mod utils;
+mod webhook;
 
+pub use backend::{validate_container_name, DeploymentStage};
 pub use certificate::CertificateStage;
-pub use backend::{DeploymentStage, validate_container_name};
-pub use webhook::WebhookStage;
 pub use service::ServiceStage;
+pub use webhook::WebhookStage;
 
 pub use utils::{
-    Operation,
-    perform_cluster_get,
-    perform_cluster_operation,
-    perform_get,
-    perform_operation,
-    update_status,
-    determine_stage
+    determine_stage, perform_cluster_get, perform_cluster_operation, perform_get,
+    perform_operation, update_status, Operation,
 };

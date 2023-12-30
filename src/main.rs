@@ -1,10 +1,10 @@
 use clap::{Args, Parser};
 use futures::join;
 
-mod bootstrap;
 mod admission;
-mod crd;
+mod bootstrap;
 mod controller;
+mod crd;
 mod operator;
 
 #[derive(Parser)]
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (adm_result, controller_result) = join!(adm_proc, controller_proc);
             adm_result?;
             controller_result?;
-        },
+        }
     };
 
     Ok(())

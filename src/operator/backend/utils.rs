@@ -1,35 +1,49 @@
+use crate::controller::Error;
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::api::core::v1::PodSpec;
-use k8s_openapi::api::apps::v1::Deployment;
 use serde_json::Value;
-use crate::controller::Error;
 
-pub async fn validate_container_name(container_name: Option<String>, pod_spec: Option<PodSpec>) -> Result<(), Error> {
-
+pub async fn validate_container_name(
+    container_name: Option<String>,
+    pod_spec: Option<PodSpec>,
+) -> Result<(), Error> {
     if let Some(container_name) = container_name.clone() {
         let container_names: Vec<String> = match pod_spec.clone() {
-            Some(pod_spec) => {
-                pod_spec.containers.iter().filter(|p| p.name == container_name).map(|p| p.name.clone()).collect()
-            },
+            Some(pod_spec) => pod_spec
+                .containers
+                .iter()
+                .filter(|p| p.name == container_name)
+                .map(|p| p.name.clone())
+                .collect(),
             None => Vec::new(),
         };
 
         if container_names.len() != 1 {
-            return Err(Error::UnableToCreateObject(format!("Container name {} not found in PodSpec", container_name)));
+            return Err(Error::UnableToCreateObject(format!(
+                "Container name {} not found in PodSpec",
+                container_name
+            )));
         };
-
     } else {
         let container_names: Vec<String> = match pod_spec.clone() {
-            Some(pod_spec) => {
-                pod_spec.containers.iter().map(|p| p.name.clone()).collect()
-            },
+            Some(pod_spec) => pod_spec.containers.iter().map(|p| p.name.clone()).collect(),
             None => Vec::new(),
         };
 
         match container_names.len() {
-            0 => return Err(Error::UnableToCreateObject("No Containers Specified in PodSpec".into())),
-            1 => {},
-            _ => return Err(Error::UnableToCreateObject("Too many containers in PodSpec, specify ContainerName in WebhookHelper Spec".into())),
+            0 => {
+                return Err(Error::UnableToCreateObject(
+                    "No Containers Specified in PodSpec".into(),
+                ))
+            }
+            1 => {}
+            _ => {
+                return Err(Error::UnableToCreateObject(
+                    "Too many containers in PodSpec, specify ContainerName in WebhookHelper Spec"
+                        .into(),
+                ))
+            }
         };
     };
 
