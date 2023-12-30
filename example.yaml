@@ -1,0 +1,41 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: my-example-namespace
+---
+apiVersion: webhook-helper.io/v1
+kind: WebhookHelper
+metadata:
+  name: my-webhook
+spec: 
+  namespace: my-example-namespace
+  listening_port: 8080
+  webhook:
+    apiVersion: admissionregistration.k8s.io/v1
+    kind: ValidatingWebhookConfiguration
+    metadata:
+      name: ktlo
+    webhooks:
+      - name: ktlo.default.svc
+        rules:
+          - operations: ["CREATE", "UPDATE", "DELETE"]
+            apiGroups: ["kubeto.io"]
+            apiVersions: ["v1"]
+            resources: ["definitions", "tasks"]
+        failurePolicy: Fail
+        admissionReviewVersions: ["v1", "v1beta1"]
+        sideEffects: None
+        timeoutSeconds: 5
+  deployment:
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: nginx
+      namespace: my-example-namespace
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.14.2
+        ports:
+        - containerPort: 8080

@@ -1,0 +1,186 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: webhook-helper
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: webhook-helpers.webhook-helper.io
+spec:
+ group: webhook-helper.io
+ names:
+   plural: webhook-helpers
+   singular: webhook-helper
+   kind: WebhookHelper
+   shortNames:
+   - wh
+   - webhook
+   - helper
+ scope: Cluster
+ versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                namespace:
+                  type: string
+                webhook:
+                  type: object
+                  x-kubernetes-embedded-resource: true
+                  x-kubernetes-preserve-unknown-fields: true
+                listening_port:
+                  type: number
+                deployment:
+                  type: object
+                  x-kubernetes-embedded-resource: true
+                  x-kubernetes-preserve-unknown-fields: true
+              required: ["namespace", "webhook", "listening_port", "deployment"]
+            status:
+              type: object
+              properties:
+                certificate: 
+                  type: string
+                service:
+                  type: string
+                deployment:
+                  type: string
+                pod:
+                  type: string
+                validating_webhook:
+                  type: string
+                mutating_webhook:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                      status:
+                        type: string
+                      last_transition_time:
+                        type: string
+                    x-kubernetes-preserve-unknown-fields: true
+          required: ["spec"]
+      subresources:
+        status: {}
+      
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webhook-helper-service-account
+  namespace: webhook-helper
+secrets:
+  - name: "webhook-helper.webhook-helper.svc"
+  - name: "regcred"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: role.webhook-helper.io
+rules:
+  - apiGroups:
+    - certificates.k8s.io
+    resources:
+    - certificatesigningrequests
+    verbs:
+    - create
+    - get
+    - list
+    - watch
+    - delete
+  - apiGroups:
+    - certificates.k8s.io
+    resources:
+    - certificatesigningrequests/approval
+    verbs:
+    - update
+    - get
+    - delete
+  - apiGroups:
+    - certificates.k8s.io
+    resources:
+    - signers
+    verbs:
+    - approve
+  - apiGroups:
+      - admissionregistration.k8s.io
+    resources:
+      - validatingwebhookconfigurations
+      - mutatingwebhookconfigurations
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups:
+      - webhook-helper.io
+    resources:
+      - webhook-helpers
+      - webhook-helpers/status
+    verbs: 
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+      - apps
+      - rbac.authorization.k8s.io
+      - certificates.k8s.io
+    resources:
+      - pods
+      - deployments
+      - persistentvolumes
+      - persistentvolumeclaims
+      - serviceaccounts
+      - services
+      - secrets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+    resourceNames:
+      - kube-root-ca.crt
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: webhook-helper-cluster-rolebinding
+  namespace: webhook-helper 
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: role.webhook-helper.io
+subjects:
+- namespace: webhook-helper 
+  kind: ServiceAccount
+  name: webhook-helper-service-account
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bootstrap-helper
+  namespace: webhook-helper
+spec:
+  template:
+    spec:
+      containers:
+        - name: bootstrap
+          image: rc1405/webhook-helper:latest
+          args: ["bootstrap", "-n", "webhook-helper"]
+      restartPolicy: Never
+      serviceAccountName: webhook-helper-service-account
+  backoffLimit: 4
